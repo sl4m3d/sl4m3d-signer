@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release version"
+        description: "GitHub Release version"
         required: true
-        default: "v1.2.1"
+        default: "v1.2.0"
         type: string
 
 permissions:
@@ -19,88 +19,63 @@ concurrency:
 
 jobs:
   windows:
-    name: Build Windows installer
+    name: Windows Online Installer
     runs-on: windows-2025
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract patch
+      - name: Extract Windows build files
         shell: pwsh
         run: |
-          Expand-Archive `
-            -LiteralPath "sl4m3d-online-installer-patch.zip" `
-            -DestinationPath "$env:RUNNER_TEMP/patch" -Force
+          $patch = "$env:RUNNER_TEMP/patch"
+          Expand-Archive "sl4m3d-online-installer-patch.zip" $patch -Force
 
-          Copy-Item "$env:RUNNER_TEMP/patch/windows" "." -Recurse -Force
+          Copy-Item "$patch/windows/*" "windows/" -Recurse -Force
 
-      - name: Install tools
+      - name: Install build tools
         run: choco install openssl.light innosetup --yes --no-progress
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Build
+      - name: Build Windows bootstrap installer
         shell: powershell
         run: .\windows\build-windows.ps1
 
-      - name: Check installer
+      - name: Verify Windows files
         shell: pwsh
         run: |
-          $file = "windows/output/installer.exe"
-          if (!(Test-Path $file)) {
-            throw "installer.exe missing"
+          $installer = "windows/output/installer.exe"
+          $payload = "windows/output/windows-payload.zip"
+
+          if (!(Test-Path $installer)) {
+            throw "installer.exe was not generated"
           }
 
-          if ((Get-Item $file).Length -ge 10MB) {
+          if (!(Test-Path $payload)) {
+            throw "windows-payload.zip was not generated"
+          }
+
+          if ((Get-Item $installer).Length -ge 10MB) {
             throw "Windows installer exceeds 10 MB"
           }
 
+          if ((Get-Item $payload).Length -lt 1MB) {
+            throw "Windows payload is unexpectedly small"
+          }
+
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: windows/output/*
+          name: windows-build
+          path: |
+            windows/output/installer.exe
+            windows/output/windows-payload.zip
           if-no-files-found: error
 
-  android:
-    name: Build Android APK
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Install Android SDK
-        run: |
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -n 1)"
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.7.0"
-
-      - name: Build APK
-        working-directory: android
-        run: gradle --no-daemon assembleDebug
-
-      - name: Prepare APK
-        run: |
-          mkdir -p out
-          cp android/app/build/outputs/apk/debug/app-debug.apk out/installer.apk
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-installer
-          path: out/installer.apk
-
   macos:
-    name: Build macOS payload
+    name: macOS Payload (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
 
     strategy:
@@ -109,100 +84,75 @@ jobs:
         include:
           - runner: macos-15-intel
             arch: x86_64
+
           - runner: macos-latest
             arch: arm64
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract patch
+      - name: Extract macOS build files
         run: |
           mkdir -p "$RUNNER_TEMP/patch"
-          unzip -o sl4m3d-online-installer-patch.zip 'mac/*' -d "$RUNNER_TEMP/patch"
-          cp -R "$RUNNER_TEMP/patch/mac/." mac/
+          unzip -o sl4m3d-online-installer-patch.zip \
+            'mac/build-macos.sh' \
+            -d "$RUNNER_TEMP/patch"
+
+          cp "$RUNNER_TEMP/patch/mac/build-macos.sh" mac/build-macos.sh
+          chmod +x mac/build-macos.sh
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Build
+      - name: Build architecture-specific payload
         run: bash mac/build-macos.sh
 
-      - name: Prepare payload
+      - name: Verify payload
         run: |
           set -euo pipefail
-          mkdir -p out
-          ditto -c -k --sequesterRsrc \
-            "dist/sl4m3d Signer.app" \
-            "out/mac-payload-${{ matrix.arch }}.zip"
+          test -s "mac/output/${{ matrix.arch }}/mac-payload-${{ matrix.arch }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: out/mac-payload-${{ matrix.arch }}.zip
+          path: mac/output/${{ matrix.arch }}/mac-payload-${{ matrix.arch }}.zip
+          if-no-files-found: error
 
-  linux:
-    name: Validate Linux
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate packages
-        run: |
-          set -euo pipefail
-          test -s linux/installer.deb
-          dpkg-deb --info linux/installer.deb
-          test -s linux/portable/sl4m3d-signer-linux-portable.tar.gz
-          tar -tzf linux/portable/sl4m3d-signer-linux-portable.tar.gz >/dev/null
-          (cd linux && sha256sum --check SHA256SUMS.txt)
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-installers
-          path: |
-            linux/installer.deb
-            linux/portable/sl4m3d-signer-linux-portable.tar.gz
-
-  release:
-    name: Create GitHub Release
-    runs-on: ubuntu-24.04
-
-    needs:
-      - windows
-      - android
-      - macos
-      - linux
+  macos-bootstrap:
+    name: Create Universal macOS Installers
+    runs-on: macos-latest
+    needs: macos
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: Download macOS payloads
+        uses: actions/download-artifact@v4
         with:
-          path: collected
+          pattern: macos-*
+          path: payloads
+          merge-multiple: true
 
-      - name: Extract macOS package script
+      - name: Extract installer script
         run: |
           mkdir -p "$RUNNER_TEMP/patch"
-          unzip -o sl4m3d-online-installer-patch.zip 'mac/pkg-scripts/*' -d "$RUNNER_TEMP/patch"
+          unzip -o sl4m3d-online-installer-patch.zip \
+            'mac/pkg-scripts/postinstall' \
+            -d "$RUNNER_TEMP/patch"
+
           mkdir -p mac/pkg-scripts
-          cp -R "$RUNNER_TEMP/patch/mac/pkg-scripts/." mac/pkg-scripts/
+          cp "$RUNNER_TEMP/patch/mac/pkg-scripts/postinstall" mac/pkg-scripts/postinstall
           chmod +x mac/pkg-scripts/postinstall
 
-      - name: Assemble release
+      - name: Build universal bootstrap PKG and DMG
         run: |
           set -euo pipefail
 
-          mkdir -p release
+          mkdir -p release dmg-stage
 
-          cp collected/windows-installer/installer.exe release/installer.exe
-          cp collected/android-installer/installer.apk release/installer.apk
-
-          cp collected/linux-installers/installer.deb release/installer.deb
-          cp collected/linux-installers/sl4m3d-signer-linux-portable.tar.gz release/installer-portable.tar.gz
-
-          cp collected/macos-x86_64/mac-payload-x86_64.zip release/
-          cp collected/macos-arm64/mac-payload-arm64.zip release/
+          cp payloads/mac-payload-x86_64.zip release/
+          cp payloads/mac-payload-arm64.zip release/
 
           pkgbuild \
             --nopayload \
@@ -212,14 +162,17 @@ jobs:
             --install-location / \
             release/installer.pkg
 
-          mkdir -p dmg-stage
-          cp release/installer.pkg dmg-stage/
+          cp release/installer.pkg dmg-stage/installer.pkg
+
           hdiutil create \
-            -volname "sl4m3d Signer Installer" \
+            -volname "sl4m3d Signer" \
             -srcfolder dmg-stage \
             -ov \
             -format UDZO \
             release/installer.dmg
+
+          test -s release/installer.pkg
+          test -s release/installer.dmg
 
           for file in release/installer.pkg release/installer.dmg; do
             size=$(stat -f%z "$file")
@@ -227,32 +180,39 @@ jobs:
             test "$size" -lt 10485760
           done
 
-          cat > release/README.txt <<'EOF'
-          sl4m3d Signer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          path: |
+            release/installer.pkg
+            release/installer.dmg
+            release/mac-payload-x86_64.zip
+            release/mac-payload-arm64.zip
+          if-no-files-found: error
 
-          Windows: installer.exe
-          macOS: installer.pkg / installer.dmg
-          Android: installer.apk
-          Linux: installer.deb / installer-portable.tar.gz
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs:
+      - windows
+      - macos-bootstrap
 
-          macOS supports Intel and Apple Silicon.
-          Internet access is required for online installation.
+    steps:
+      - uses: actions/checkout@v4
 
-          Windows is unsigned.
-          macOS is ad-hoc signed and not notarized.
-          Android APK is debug-signed.
-          EOF
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-build
+          path: collected/windows
+          merge-multiple: true
 
-          (
-            cd release
-            shasum -a 256 \
-              installer.exe installer.apk installer.deb \
-              installer-portable.tar.gz installer.pkg installer.dmg \
-              mac-payload-x86_64.zip mac-payload-arm64.zip \
-              > SHA256SUMS.txt
-          )
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-installers
+          path: collected/macos
+          merge-multiple: true
 
-      - name: Publish release
+      - name: Prepare release files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -264,9 +224,93 @@ jobs:
             exit 1
           fi
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          mkdir -p release
+
+          cp collected/windows/installer.exe release/
+          cp collected/windows/windows-payload.zip release/
+
+          cp collected/macos/installer.pkg release/
+          cp collected/macos/installer.dmg release/
+          cp collected/macos/mac-payload-x86_64.zip release/
+          cp collected/macos/mac-payload-arm64.zip release/
+
+          # Reuse existing Android and Linux release assets.
+          gh release download latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern installer.apk \
+            --dir release
+
+          gh release download latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern installer.deb \
+            --dir release
+
+          gh release download latest \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern installer-portable.tar.gz \
+            --dir release
+
+          test -s release/installer.exe
+          test -s release/installer.pkg
+          test -s release/installer.dmg
+          test -s release/installer.apk
+          test -s release/installer.deb
+          test -s release/installer-portable.tar.gz
+
+          cat > release/README.txt <<'EOF'
+          sl4m3d Signer
+
+          Windows:
+          installer.exe
+
+          macOS:
+          installer.pkg
+          installer.dmg
+
+          Android:
+          installer.apk
+
+          Linux:
+          installer.deb
+          installer-portable.tar.gz
+
+          macOS installer supports Intel and Apple Silicon.
+          Internet connection is required for installation.
+
+          macOS: ad-hoc signed, not notarized.
+          Windows: unsigned.
+          Android: existing APK.
+          Linux: existing packages.
+          EOF
+
+          (
+            cd release
+            sha256sum \
+              installer.exe \
+              installer.pkg \
+              installer.dmg \
+              installer.apk \
+              installer.deb \
+              installer-portable.tar.gz \
+              windows-payload.zip \
+              mac-payload-x86_64.zip \
+              mac-payload-arm64.zip \
+              > SHA256SUMS.txt
+          )
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+
             gh release upload "$RELEASE_TAG" release/* \
-              --repo "$GITHUB_REPOSITORY" --clobber
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
 
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -279,3 +323,5 @@ jobs:
               --title "sl4m3d Signer $RELEASE_TAG" \
               --notes-file release/README.txt
           fi
+
+          echo "Release successfully published."
