@@ -1,0 +1,29 @@
+
+# .github/workflows/make-online-installer.yml
+
+name: Make Online Installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release version
+        required: true
+        default: v1.2.1
+
+permissions:
+  contents: write
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Start installer build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run build-installers.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f "release_tag=${{ inputs.release_tag }}"
