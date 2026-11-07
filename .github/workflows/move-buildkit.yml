@@ -25,6 +25,9 @@ jobs:
           cp installer-buildkit/BUILD-STATUS.txt .
           cp installer-buildkit/README.md .
 
+          mkdir -p .github/workflows
+cp installer-buildkit/.github/workflows/build-installers.yml .github/workflows/build-installers.yml
+
           rm -rf installer-buildkit/android
           rm -rf installer-buildkit/linux
           rm -rf installer-buildkit/mac
