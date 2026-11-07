@@ -1,46 +1,58 @@
 
-name: Build sl4m3d Signer installers
+name: Build and release sl4m3d Signer
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release version"
+        required: true
+        default: "v1.2.0"
+        type: string
   push:
     tags:
-      - 'v1.2.0'
+      - "v*"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: signer-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows:
-    name: Windows installer.exe
+    name: Windows x64
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build tools
-        shell: powershell
+      - name: Install tools
         run: choco install openssl.light innosetup --yes --no-progress
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
-      - name: Build installer
+      - name: Build
+        shell: powershell
+        run: .\windows\build-windows.ps1
+
+      - name: Verify
         shell: powershell
         run: |
-          .\windows\build-windows.ps1
-          New-Item -ItemType Directory -Force -Path out\windows | Out-Null
-          $installer = Get-ChildItem windows\output\*.exe | Select-Object -First 1
-          if (!$installer) { throw 'installer.exe was not produced' }
-          Copy-Item $installer.FullName out\windows\installer.exe
+          $file = "windows/output/sl4m3d-Signer-Setup-v1.2.0.exe"
+          if (!(Test-Path $file)) { throw "Installer missing" }
+          if ((Get-Item $file).Length -lt 1MB) { throw "Installer too small" }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: out/windows/installer.exe
+          name: signer-windows
+          path: windows/output/sl4m3d-Signer-Setup-v1.2.0.exe
+          if-no-files-found: error
 
   android:
-    name: Android installer.apk
+    name: Android APK
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -48,93 +60,209 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Prepare Android SDK
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.7.0'
+          gradle-version: "9.7.0"
 
       - name: Build APK
         working-directory: android
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Stage APK
+      - name: Verify APK
         run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
           mkdir -p out/android
           cp android/app/build/outputs/apk/debug/app-debug.apk out/android/installer.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: android-installer
+          name: signer-android
           path: out/android/installer.apk
+          if-no-files-found: error
 
   macos:
     name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: macos-15-intel
             arch: x86_64
-            suffix: intel
+            label: intel
           - runner: macos-latest
             arch: arm64
-            suffix: arm64
-
-    runs-on: ${{ matrix.runner }}
+            label: arm64
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
-      - name: Build DMG and PKG
+      - name: Build
+        run: bash mac/build-macos.sh
+
+      - name: Verify
         run: |
-          bash mac/build-macos.sh
-          mkdir -p "out/mac/${{ matrix.suffix }}"
-          cp mac/output/${{ matrix.arch }}/*.dmg "out/mac/${{ matrix.suffix }}/installer-${{ matrix.suffix }}.dmg"
-          cp mac/output/${{ matrix.arch }}/*.pkg "out/mac/${{ matrix.suffix }}/installer-${{ matrix.suffix }}.pkg"
+          set -euo pipefail
+          test -s "mac/output/${{ matrix.arch }}/sl4m3d-Signer-v1.2.0-${{ matrix.arch }}.dmg"
+          test -s "mac/output/${{ matrix.arch }}/sl4m3d-Signer-v1.2.0-${{ matrix.arch }}.pkg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.suffix }}-installers
-          path: out/mac/${{ matrix.suffix }}/*
+          name: signer-macos-${{ matrix.label }}
+          path: |
+            mac/output/${{ matrix.arch }}/*.dmg
+            mac/output/${{ matrix.arch }}/*.pkg
+          if-no-files-found: error
 
-  package:
-    name: Assemble download package
-    needs: [windows, android, macos]
+  linux:
+    name: Linux packages
     runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Debian package
+        run: |
+          set -euo pipefail
+          test -s linux/installer.deb
+          dpkg-deb --info linux/installer.deb
+          dpkg-deb --contents linux/installer.deb >/dev/null
+
+      - name: Validate portable archive
+        run: |
+          set -euo pipefail
+          test -s linux/portable/sl4m3d-signer-linux-portable.tar.gz
+          tar -tzf linux/portable/sl4m3d-signer-linux-portable.tar.gz >/dev/null
+
+      - name: Verify checksums
+        working-directory: linux
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Stage packages
+        run: |
+          mkdir -p out/linux
+          cp linux/installer.deb out/linux/installer.deb
+          cp linux/portable/sl4m3d-signer-linux-portable.tar.gz out/linux/installer-portable.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signer-linux
+          path: out/linux/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [windows, android, macos, linux]
+    if: ${{ success() }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: Download all builds
+        uses: actions/download-artifact@v4
         with:
-          pattern: '*-installers'
+          pattern: signer-*
           path: collected
 
-      - name: Assemble ZIP
+      - name: Assemble downloads
         run: |
-          mkdir -p release/linux release/windows release/android release/mac
+          set -euo pipefail
 
-          cp linux/installer.deb release/linux/installer.deb
-          cp linux/portable/sl4m3d-signer-linux-portable.tar.gz release/linux/
+          mkdir -p release/windows release/android release/linux release/mac
 
-          cp collected/windows-installer/installer.exe release/windows/installer.exe
-          cp collected/android-installer/installer.apk release/android/installer.apk
+          cp collected/signer-windows/*.exe release/windows/installer.exe
+          cp collected/signer-android/installer.apk release/android/installer.apk
 
-          find collected -type f \( -name '*.dmg' -o -name '*.pkg' \) -exec cp {} release/mac/ \;
+          cp collected/signer-linux/installer.deb release/linux/installer.deb
+          cp collected/signer-linux/installer-portable.tar.gz release/linux/installer-portable.tar.gz
 
-          (cd release && find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt)
+          cp collected/signer-macos-intel/*.dmg release/mac/installer-intel.dmg
+          cp collected/signer-macos-intel/*.pkg release/mac/installer-intel.pkg
+
+          cp collected/signer-macos-arm64/*.dmg release/mac/installer-arm64.dmg
+          cp collected/signer-macos-arm64/*.pkg release/mac/installer-arm64.pkg
+
+          cat > release/README.txt <<'EOF'
+          sl4m3d Signer 1.2.0
+
+          WINDOWS
+          windows/installer.exe
+
+          ANDROID
+          android/installer.apk
+
+          LINUX
+          linux/installer.deb
+          linux/installer-portable.tar.gz
+
+          MACOS INTEL
+          mac/installer-intel.dmg
+          mac/installer-intel.pkg
+
+          MACOS APPLE SILICON
+          mac/installer-arm64.dmg
+          mac/installer-arm64.pkg
+
+          Signing status:
+          Windows: unsigned
+          Android: debug-signed
+          macOS: ad-hoc signed, not notarized
+          EOF
+
+          (
+            cd release
+            find windows android linux mac -type f -print0 |
+              sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          )
 
           zip -r sl4m3d-signer-installers.zip release
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sl4m3d-signer-installers
-          path: sl4m3d-signer-installers.zip
-          retention-days: 90
+      - name: Select release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $TAG"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            release/windows/installer.exe \
+            release/android/installer.apk \
+            release/linux/installer.deb \
+            release/linux/installer-portable.tar.gz \
+            release/mac/installer-intel.dmg \
+            release/mac/installer-intel.pkg \
+            release/mac/installer-arm64.dmg \
+            release/mac/installer-arm64.pkg \
+            release/SHA256SUMS.txt \
+            sl4m3d-signer-installers.zip \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "sl4m3d Signer ${{ steps.tag.outputs.tag }}" \
+            --notes-file release/README.txt
