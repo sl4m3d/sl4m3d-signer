@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
 }
@@ -15,7 +14,8 @@ android {
         versionCode = 10200
         versionName = "1.2.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner =
+            "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -39,8 +39,10 @@ android {
             excludes += setOf(
                 "META-INF/DEPENDENCIES",
                 "META-INF/LICENSE",
+                "META-INF/LICENSE.md",
                 "META-INF/LICENSE.txt",
                 "META-INF/NOTICE",
+                "META-INF/NOTICE.md",
                 "META-INF/NOTICE.txt"
             )
         }
