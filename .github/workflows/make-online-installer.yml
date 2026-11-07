@@ -1,72 +1,209 @@
 
-name: Build Online Installers
+name: Build Installers and Publish v1.2.1
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "GitHub Release version"
-        required: true
-        default: "v1.2.0"
-        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: signer-online-build
+  group: signer-release-v1-2-1
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: v1.2.1
+  SOURCE_TAG: v1.2.0
+  APP_NAME: sl4m3d Signer
+
 jobs:
+
+  # ==========================================
+  # WINDOWS
+  # ==========================================
+
   windows:
-    name: Windows Online Installer
+    name: Build Windows Installer
     runs-on: windows-2025
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extract Windows build files
-        shell: pwsh
-        run: |
-          $patch = "$env:RUNNER_TEMP/patch"
-          Expand-Archive "sl4m3d-online-installer-patch.zip" $patch -Force
-
-          Copy-Item "$patch/windows/*" "windows/" -Recurse -Force
-
-      - name: Install build tools
-        run: choco install openssl.light innosetup --yes --no-progress
-
-      - uses: actions/setup-python@v5
+      - name: Install Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Build Windows bootstrap installer
-        shell: powershell
-        run: .\windows\build-windows.ps1
-
-      - name: Verify Windows files
+      - name: Install build tools
         shell: pwsh
         run: |
-          $installer = "windows/output/installer.exe"
-          $payload = "windows/output/windows-payload.zip"
+          choco install openssl.light innosetup --yes --no-progress
 
-          if (!(Test-Path $installer)) {
-            throw "installer.exe was not generated"
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r windows/requirements-build.txt
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $OpenSSL = Get-Command openssl -ErrorAction Stop
+          $OpenSSLBin = Split-Path -Parent $OpenSSL.Source
+          $OpenSSLHome = Split-Path -Parent $OpenSSLBin
+
+          Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --onedir `
+            --name "sl4m3d Signer" `
+            --add-data "linux\source-portable\app\assets;assets" `
+            linux\source-portable\app\src\signer.py
+
+          if (!(Test-Path "dist/sl4m3d Signer")) {
+            throw "PyInstaller did not create the application."
           }
 
-          if (!(Test-Path $payload)) {
-            throw "windows-payload.zip was not generated"
+          $Bundle = "dist/sl4m3d Signer/openssl"
+          New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
+
+          Copy-Item "$OpenSSLHome/*" $Bundle -Recurse -Force
+
+          if (!(Test-Path "$Bundle/bin/openssl.exe")) {
+            throw "OpenSSL runtime missing."
           }
 
-          if ((Get-Item $installer).Length -ge 10MB) {
-            throw "Windows installer exceeds 10 MB"
+      - name: Create Windows payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force windows/output | Out-Null
+
+          Compress-Archive `
+            -Path "dist/sl4m3d Signer/*" `
+            -DestinationPath "windows/output/windows-payload.zip" `
+            -CompressionLevel Optimal `
+            -Force
+
+          if (!(Test-Path "windows/output/windows-payload.zip")) {
+            throw "Windows payload missing."
           }
 
-          if ((Get-Item $payload).Length -lt 1MB) {
-            throw "Windows payload is unexpectedly small"
+      - name: Create Windows bootstrap
+        shell: pwsh
+        run: |
+          @'
+          param(
+              [Parameter(Mandatory=$true)]
+              [string]$InstallDir,
+
+              [Parameter(Mandatory=$true)]
+              [string]$ReleaseTag
+          )
+
+          $ErrorActionPreference = "Stop"
+
+          $Asset = "windows-payload.zip"
+          $Url = "https://github.com/sl4m3d/sl4m3d-signer/releases/download/$ReleaseTag/$Asset"
+
+          $TempFile = Join-Path $env:TEMP "sl4m3d-signer-payload.zip"
+
+          Write-Host "Downloading sl4m3d Signer..."
+
+          Invoke-WebRequest `
+              -Uri $Url `
+              -OutFile $TempFile `
+              -UseBasicParsing
+
+          if (!(Test-Path $TempFile)) {
+              throw "Payload download failed."
           }
 
-      - uses: actions/upload-artifact@v4
+          New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+          Expand-Archive `
+              -LiteralPath $TempFile `
+              -DestinationPath $InstallDir `
+              -Force
+
+          $Exe = Join-Path $InstallDir "sl4m3d Signer.exe"
+
+          if (!(Test-Path $Exe)) {
+              throw "Application executable missing after extraction."
+          }
+
+          Remove-Item $TempFile -Force
+
+          Write-Host "Installation completed."
+          '@ | Set-Content windows/bootstrap.ps1 -Encoding UTF8
+
+      - name: Create Inno Setup installer
+        shell: pwsh
+        run: |
+          @'
+          #define MyAppName "sl4m3d Signer"
+          #define MyAppVersion "1.2.1"
+
+          [Setup]
+          AppId={{A30C6DE7-AC59-46A1-AC37-0C79C379A12B}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppPublisher=sl4m3d
+          DefaultDirName={localappdata}\Programs\sl4m3d Signer
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=lowest
+          OutputDir=output
+          OutputBaseFilename=installer
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesInstallIn64BitMode=x64compatible
+
+          [Files]
+          Source: "bootstrap.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
+
+          [Icons]
+          Name: "{autoprograms}\sl4m3d Signer"; Filename: "{app}\sl4m3d Signer.exe"
+          Name: "{autodesktop}\sl4m3d Signer"; Filename: "{app}\sl4m3d Signer.exe"
+
+          [Run]
+          Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{tmp}\bootstrap.ps1"" -InstallDir ""{app}"" -ReleaseTag ""v1.2.1"""; Flags: runhidden waituntilterminated
+          '@ | Set-Content windows/installer.iss -Encoding UTF8
+
+          $ISCC = Get-Command ISCC.exe -ErrorAction Stop
+
+          & $ISCC.Source "windows/installer.iss"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed."
+          }
+
+      - name: Verify Windows installer
+        shell: pwsh
+        run: |
+          $Installer = "windows/output/installer.exe"
+
+          if (!(Test-Path $Installer)) {
+            throw "installer.exe missing."
+          }
+
+          $Size = (Get-Item $Installer).Length
+
+          Write-Host "Installer size: $Size bytes"
+
+          if ($Size -ge 10485760) {
+            throw "Windows installer exceeds 10 MB."
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: windows-build
           path: |
@@ -74,8 +211,12 @@ jobs:
             windows/output/windows-payload.zip
           if-no-files-found: error
 
+  # ==========================================
+  # MACOS INTEL + APPLE SILICON
+  # ==========================================
+
   macos:
-    name: macOS Payload (${{ matrix.arch }})
+    name: Build macOS Payload (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
 
     strategy:
@@ -89,43 +230,111 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extract macOS build files
-        run: |
-          mkdir -p "$RUNNER_TEMP/patch"
-          unzip -o sl4m3d-online-installer-patch.zip \
-            'mac/build-macos.sh' \
-            -d "$RUNNER_TEMP/patch"
-
-          cp "$RUNNER_TEMP/patch/mac/build-macos.sh" mac/build-macos.sh
-          chmod +x mac/build-macos.sh
-
-      - uses: actions/setup-python@v5
+      - name: Install Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Build architecture-specific payload
-        run: bash mac/build-macos.sh
+      - name: Install OpenSSL
+        run: brew install openssl@3
 
-      - name: Verify payload
+      - name: Build macOS application
+        env:
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
         run: |
           set -euo pipefail
-          test -s "mac/output/${{ matrix.arch }}/mac-payload-${{ matrix.arch }}.zip"
 
-      - uses: actions/upload-artifact@v4
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyinstaller==6.16.0
+
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --onedir \
+            --name "sl4m3d Signer" \
+            --add-data "linux/source-portable/app/assets:assets" \
+            linux/source-portable/app/src/signer.py
+
+          APP="dist/sl4m3d Signer.app"
+
+          test -d "$APP"
+
+          OPENSSL_DIR="$APP/Contents/Frameworks/openssl"
+
+          mkdir -p \
+            "$OPENSSL_DIR/bin" \
+            "$OPENSSL_DIR/lib/ossl-modules" \
+            "$OPENSSL_DIR/ssl"
+
+          cp -L "$OPENSSL_PREFIX/bin/openssl" \
+            "$OPENSSL_DIR/bin/openssl"
+
+          cp -L "$OPENSSL_PREFIX/lib/libcrypto.3.dylib" \
+            "$OPENSSL_DIR/lib/libcrypto.3.dylib"
+
+          cp -L "$OPENSSL_PREFIX/lib/libssl.3.dylib" \
+            "$OPENSSL_DIR/lib/libssl.3.dylib"
+
+          cp -L "$OPENSSL_PREFIX/lib/ossl-modules/legacy.dylib" \
+            "$OPENSSL_DIR/lib/ossl-modules/legacy.dylib"
+
+          if [[ -f "$OPENSSL_PREFIX/ssl/openssl.cnf" ]]; then
+            cp -L "$OPENSSL_PREFIX/ssl/openssl.cnf" \
+              "$OPENSSL_DIR/ssl/openssl.cnf"
+          fi
+
+          install_name_tool -change \
+            "$OPENSSL_PREFIX/lib/libcrypto.3.dylib" \
+            "@loader_path/../libcrypto.3.dylib" \
+            "$OPENSSL_DIR/lib/libssl.3.dylib" || true
+
+          install_name_tool -change \
+            "$OPENSSL_PREFIX/lib/libcrypto.3.dylib" \
+            "@executable_path/../lib/libcrypto.3.dylib" \
+            "$OPENSSL_DIR/bin/openssl" || true
+
+          install_name_tool -change \
+            "$OPENSSL_PREFIX/lib/libssl.3.dylib" \
+            "@executable_path/../lib/libssl.3.dylib" \
+            "$OPENSSL_DIR/bin/openssl" || true
+
+          chmod 755 "$OPENSSL_DIR/bin/openssl"
+
+          codesign --force --deep --sign - "$APP"
+
+          mkdir -p mac-output
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" \
+            "mac-output/mac-payload-${{ matrix.arch }}.zip"
+
+          test -s "mac-output/mac-payload-${{ matrix.arch }}.zip"
+
+      - name: Upload macOS payload
+        uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: mac/output/${{ matrix.arch }}/mac-payload-${{ matrix.arch }}.zip
+          path: mac-output/mac-payload-${{ matrix.arch }}.zip
           if-no-files-found: error
 
-  macos-bootstrap:
-    name: Create Universal macOS Installers
+  # ==========================================
+  # UNIVERSAL MACOS BOOTSTRAP INSTALLERS
+  # ==========================================
+
+  macos-installers:
+    name: Create installer.pkg and installer.dmg
     runs-on: macos-latest
     needs: macos
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Download macOS payloads
         uses: actions/download-artifact@v4
@@ -134,22 +343,72 @@ jobs:
           path: payloads
           merge-multiple: true
 
-      - name: Extract installer script
-        run: |
-          mkdir -p "$RUNNER_TEMP/patch"
-          unzip -o sl4m3d-online-installer-patch.zip \
-            'mac/pkg-scripts/postinstall' \
-            -d "$RUNNER_TEMP/patch"
-
-          mkdir -p mac/pkg-scripts
-          cp "$RUNNER_TEMP/patch/mac/pkg-scripts/postinstall" mac/pkg-scripts/postinstall
-          chmod +x mac/pkg-scripts/postinstall
-
-      - name: Build universal bootstrap PKG and DMG
+      - name: Create macOS postinstall script
         run: |
           set -euo pipefail
 
-          mkdir -p release dmg-stage
+          mkdir -p mac/pkg-scripts release dmg-stage
+
+          cat > mac/pkg-scripts/postinstall <<'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+
+          TAG="v1.2.1"
+          REPO="sl4m3d/sl4m3d-signer"
+
+          ARCH="$(uname -m)"
+
+          case "$ARCH" in
+            arm64)
+              ASSET="mac-payload-arm64.zip"
+              ;;
+            x86_64)
+              ASSET="mac-payload-x86_64.zip"
+              ;;
+            *)
+              echo "Unsupported Mac architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+
+          curl -fL "$BASE/$ASSET" -o "$TMP/payload.zip"
+          curl -fL "$BASE/SHA256SUMS.txt" -o "$TMP/SHA256SUMS.txt"
+
+          cd "$TMP"
+
+          grep -E "^[[:xdigit:]]{64}  ${ASSET}$" SHA256SUMS.txt \
+            > expected.txt
+
+          test -s expected.txt
+          shasum -a 256 -c expected.txt
+
+          mkdir extracted
+          ditto -x -k payload.zip extracted
+
+          APP="$(find extracted -name 'sl4m3d Signer.app' -type d -print -quit)"
+
+          if [[ -z "$APP" ]]; then
+            echo "Application bundle not found."
+            exit 1
+          fi
+
+          rm -rf "/Applications/sl4m3d Signer.app"
+          ditto "$APP" "/Applications/sl4m3d Signer.app"
+
+          echo "sl4m3d Signer installed successfully."
+          exit 0
+          SCRIPT
+
+          chmod +x mac/pkg-scripts/postinstall
+
+      - name: Build PKG and DMG
+        run: |
+          set -euo pipefail
 
           cp payloads/mac-payload-x86_64.zip release/
           cp payloads/mac-payload-arm64.zip release/
@@ -158,7 +417,7 @@ jobs:
             --nopayload \
             --scripts mac/pkg-scripts \
             --identifier "is.great.sl4m3d.signer.bootstrap" \
-            --version "1.2.0" \
+            --version "1.2.1" \
             --install-location / \
             release/installer.pkg
 
@@ -175,12 +434,13 @@ jobs:
           test -s release/installer.dmg
 
           for file in release/installer.pkg release/installer.dmg; do
-            size=$(stat -f%z "$file")
-            echo "$file: $((size / 1024 / 1024)) MB"
-            test "$size" -lt 10485760
+            SIZE=$(stat -f%z "$file")
+            echo "$file: $SIZE bytes"
+            test "$SIZE" -lt 10485760
           done
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload macOS installers and payloads
+        uses: actions/upload-artifact@v4
         with:
           name: macos-installers
           path: |
@@ -190,39 +450,39 @@ jobs:
             release/mac-payload-arm64.zip
           if-no-files-found: error
 
+  # ==========================================
+  # GITHUB RELEASE v1.2.1
+  # ==========================================
+
   release:
-    name: Publish GitHub Release
+    name: Publish GitHub Release v1.2.1
     runs-on: ubuntu-24.04
+
     needs:
       - windows
-      - macos-bootstrap
+      - macos-installers
+
+    permissions:
+      contents: write
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
         with:
-          pattern: windows-build
+          name: windows-build
           path: collected/windows
-          merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
         with:
-          pattern: macos-installers
+          name: macos-installers
           path: collected/macos
-          merge-multiple: true
 
-      - name: Prepare release files
+      - name: Prepare release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release tag"
-            exit 1
-          fi
 
           mkdir -p release
 
@@ -231,60 +491,68 @@ jobs:
 
           cp collected/macos/installer.pkg release/
           cp collected/macos/installer.dmg release/
+
           cp collected/macos/mac-payload-x86_64.zip release/
           cp collected/macos/mac-payload-arm64.zip release/
 
-          # Reuse existing Android and Linux release assets.
-          gh release download latest \
+      - name: Reuse Android and Linux from v1.2.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh release download v1.2.0 \
             --repo "$GITHUB_REPOSITORY" \
             --pattern installer.apk \
             --dir release
 
-          gh release download latest \
+          gh release download v1.2.0 \
             --repo "$GITHUB_REPOSITORY" \
             --pattern installer.deb \
             --dir release
 
-          gh release download latest \
+          gh release download v1.2.0 \
             --repo "$GITHUB_REPOSITORY" \
             --pattern installer-portable.tar.gz \
             --dir release
 
-          test -s release/installer.exe
-          test -s release/installer.pkg
-          test -s release/installer.dmg
           test -s release/installer.apk
           test -s release/installer.deb
           test -s release/installer-portable.tar.gz
 
-          cat > release/README.txt <<'EOF'
-          sl4m3d Signer
+      - name: Generate release notes and checksums
+        run: |
+          set -euo pipefail
 
-          Windows:
+          cat > release/README.txt <<'EOF'
+          sl4m3d Signer v1.2.1
+
+          WINDOWS
           installer.exe
 
-          macOS:
+          macOS
           installer.pkg
           installer.dmg
 
-          Android:
+          ANDROID
           installer.apk
 
-          Linux:
+          LINUX
           installer.deb
           installer-portable.tar.gz
 
-          macOS installer supports Intel and Apple Silicon.
-          Internet connection is required for installation.
+          macOS supports Intel and Apple Silicon.
+          Internet access is required for online installation.
 
-          macOS: ad-hoc signed, not notarized.
           Windows: unsigned.
+          macOS: ad-hoc signed, not notarized.
           Android: existing APK.
           Linux: existing packages.
           EOF
 
           (
             cd release
+
             sha256sum \
               installer.exe \
               installer.pkg \
@@ -298,30 +566,52 @@ jobs:
               > SHA256SUMS.txt
           )
 
-      - name: Create or update GitHub Release
+      - name: Create or update v1.2.1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
 
-          if gh release view "$RELEASE_TAG" \
+          TAG="v1.2.1"
+
+          if gh release view "$TAG" \
             --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
 
-            gh release upload "$RELEASE_TAG" release/* \
+            echo "Release already exists. Updating assets."
+
+            gh release upload "$TAG" release/* \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
 
-            gh release edit "$RELEASE_TAG" \
+            gh release edit "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "sl4m3d Signer $RELEASE_TAG" \
+              --title "sl4m3d Signer v1.2.1" \
               --notes-file release/README.txt
+
           else
-            gh release create "$RELEASE_TAG" release/* \
+
+            echo "Creating release v1.2.1."
+
+            gh release create "$TAG" release/* \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "sl4m3d Signer $RELEASE_TAG" \
+              --title "sl4m3d Signer v1.2.1" \
               --notes-file release/README.txt
+
           fi
 
-          echo "Release successfully published."
+          echo "Release v1.2.1 successfully published."
+
+      - name: Verify published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh release view v1.2.1 \
+            --repo "$GITHUB_REPOSITORY"
+
+          gh release view v1.2.1 \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name'
