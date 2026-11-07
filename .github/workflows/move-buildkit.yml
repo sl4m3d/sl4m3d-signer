@@ -1,4 +1,4 @@
-name: Move installer buildkit to root
+name: Move installer files
 
 on:
   workflow_dispatch:
@@ -11,30 +11,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Move files to repository root
+      - name: Move platform files
         run: |
           set -e
 
-          test -d installer-buildkit
+          for folder in android linux mac windows; do
+            cp -a "installer-buildkit/$folder" .
+          done
 
-          cp -a installer-buildkit/. .
+          cp installer-buildkit/BUILD-INSTALLERS.md .
+          cp installer-buildkit/BUILD-STATUS.txt .
+          cp installer-buildkit/README.md .
 
-          test -f .github/workflows/build-installers.yml
-          test -d android
-          test -d linux
-          test -d mac
-          test -d windows
+          rm -rf installer-buildkit/android
+          rm -rf installer-buildkit/linux
+          rm -rf installer-buildkit/mac
+          rm -rf installer-buildkit/windows
 
-          rm -rf installer-buildkit
           rm -f sl4m3d-signer-installer-buildkit.zip
 
-      - name: Commit changes
+      - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Move installer buildkit to repository root"
+          git commit -m "Move installer files to root"
           git push
