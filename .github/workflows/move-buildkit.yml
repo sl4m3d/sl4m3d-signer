@@ -1,3 +1,4 @@
+
 name: Move installer files
 
 on:
@@ -11,34 +12,47 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Move platform files
+      - name: Move installer files
         run: |
           set -e
 
+          # Move platform folders to repository root
           for folder in android linux mac windows; do
-            cp -a "installer-buildkit/$folder" .
+            if [ -d "installer-buildkit/$folder" ]; then
+              cp -a "installer-buildkit/$folder" .
+            fi
           done
 
+          # Move documentation
           cp installer-buildkit/BUILD-INSTALLERS.md .
           cp installer-buildkit/BUILD-STATUS.txt .
           cp installer-buildkit/README.md .
 
+          # Activate the actual build workflow
           mkdir -p .github/workflows
-cp installer-buildkit/.github/workflows/build-installers.yml .github/workflows/build-installers.yml
+          cp installer-buildkit/.github/workflows/build-installers.yml \
+            .github/workflows/build-installers.yml
 
-          rm -rf installer-buildkit/android
-          rm -rf installer-buildkit/linux
-          rm -rf installer-buildkit/mac
-          rm -rf installer-buildkit/windows
+          # Remove the old nested buildkit contents
+          rm -rf installer-buildkit
 
+          # Remove the original archive if it exists
           rm -f sl4m3d-signer-installer-buildkit.zip
 
-      - name: Commit
+      - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -A
-          git commit -m "Move installer files to root"
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Set up installer build structure"
           git push
