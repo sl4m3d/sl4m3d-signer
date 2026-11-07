@@ -19,27 +19,20 @@ jobs:
         run: |
           set -e
 
-          # Move platform folders to repository root
           for folder in android linux mac windows; do
             if [ -d "installer-buildkit/$folder" ]; then
               cp -a "installer-buildkit/$folder" .
+              rm -rf "installer-buildkit/$folder"
             fi
           done
 
-          # Move documentation
-          cp installer-buildkit/BUILD-INSTALLERS.md .
-          cp installer-buildkit/BUILD-STATUS.txt .
-          cp installer-buildkit/README.md .
+          for file in BUILD-INSTALLERS.md BUILD-STATUS.txt README.md; do
+            if [ -f "installer-buildkit/$file" ]; then
+              cp "installer-buildkit/$file" .
+              rm "installer-buildkit/$file"
+            fi
+          done
 
-          # Activate the actual build workflow
-          mkdir -p .github/workflows
-          cp installer-buildkit/.github/workflows/build-installers.yml \
-            .github/workflows/build-installers.yml
-
-          # Remove the old nested buildkit contents
-          rm -rf installer-buildkit
-
-          # Remove the original archive if it exists
           rm -f sl4m3d-signer-installer-buildkit.zip
 
       - name: Commit changes
@@ -54,5 +47,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Set up installer build structure"
+          git commit -m "Organize installer build files"
           git push
