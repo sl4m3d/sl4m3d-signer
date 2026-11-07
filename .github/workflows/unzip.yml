@@ -1,0 +1,56 @@
+
+# .github/workflows/unzip.yml
+
+name: Unzip Online Installer Patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract patch
+        run: |
+          set -euo pipefail
+
+          ZIP="sl4m3d-online-installer-patch.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "Patch ZIP not found in repository root."
+            exit 1
+          fi
+
+          unzip -o "$ZIP" -d .
+
+          chmod +x mac/pkg-scripts/postinstall
+
+          test -f windows/build-windows.ps1
+          test -f windows/installer.iss
+          test -f windows/bootstrap.ps1
+          test -f mac/build-macos.sh
+          test -f mac/pkg-scripts/postinstall
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/workflows/build-installers.yml windows mac
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Add GitHub online installers"
+            git push origin HEAD:main
+          fi
