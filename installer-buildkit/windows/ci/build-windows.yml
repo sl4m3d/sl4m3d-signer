@@ -1,0 +1,25 @@
+name: Build Windows installer
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v1.2.0"]
+jobs:
+  windows-installer:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenSSL and Inno Setup
+        shell: powershell
+        run: choco install openssl.light innosetup --yes --no-progress
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build and package
+        shell: powershell
+        run: .\windows\build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sl4m3d-signer-windows-v1.2
+          path: windows/output/*.exe
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,31 @@
+sl4m3d Signer v1.2.0 — Linux release test report
+Date: 2026-11-07
+
+Built artifacts
+- installer.deb: built with dpkg-deb on Debian 13; Package=sl4m3d-signer, Version=1.2.0, Architecture=all.
+- portable/sl4m3d-signer-linux-portable.tar.gz: rebuilt from the delivered portable source tree.
+
+Tests executed on this Linux build host
+PASS — Python compileall for all desktop application modules.
+PASS — CLI self-test: RSA 2048 certificate, password-protected PKCS#12 export and key/certificate match.
+PASS — CLI self-test: EC P-256 certificate, PKCS#12 export and key/certificate match.
+PASS — CLI self-test: CMS signing, CMS verification, signed-content integrity/tamper detection and overwrite guard.
+PASS — CLI self-test: CER-only DER export; no private key or P12 is persisted by that mode.
+PASS — CLI self-test: .mobileconfig XML plist and Web Clip/Wi-Fi payload validation.
+PASS — CLI self-test: larger binary-file signing and verification.
+PASS — pytest regression suite: 5 tests passed, including opt-in statistics privacy/queue behaviour, CER-only handling, and 32 MiB streamed signing/verification.
+PASS — GUI smoke/scroll test under Xvfb: all 12 major GUI routes construct; vertical canvas scrolling, visible scrollbar, mouse-wheel action, minimum window width and CER/P12 toggle were checked.
+PASS — extracted installer.deb: package self-test passed after extraction.
+PASS — extracted portable TAR.GZ: package self-test passed after extraction.
+PASS — shell syntax check for Linux launcher and macOS build shell script.
+PASS — Android XML manifest parse (static XML syntax only).
+PASS — website HTML structural parse for index.html, downloads.html and updates.html; embedded index script passed Node syntax check.
+
+Not executed / not certified
+- Windows PowerShell, PyInstaller and Inno Setup build was not run on Windows; no EXE is included.
+- Android Gradle/Android SDK build was not run; no APK is included. The Kotlin source project is a build source, not a verified APK.
+- macOS Intel or Apple Silicon build was not run on macOS; no .app, .dmg or .pkg is included. The supplied scripts are unverified on native macOS.
+- No test on every Linux distribution/desktop environment; the portable build still requires Python 3.9+, Tkinter and OpenSSL 3.x on the target host.
+- Supabase Edge Function signer-stats v4 is deployed and active. The database aggregate currently contains 0 events. A direct HTTP GET from this build environment could not be independently verified due network access; the website displays an offline/unavailable state on fetch failures.
+
+Test scope is explicit: these results are not a guarantee of zero bugs on every platform.

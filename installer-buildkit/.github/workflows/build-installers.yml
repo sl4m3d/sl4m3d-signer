@@ -1,0 +1,140 @@
+name: Build sl4m3d Signer installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v1.2.0'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows installer.exe
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenSSL and Inno Setup
+        shell: powershell
+        run: choco install openssl.light innosetup --yes --no-progress
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build installer
+        shell: powershell
+        run: |
+          .\windows\build-windows.ps1
+          New-Item -ItemType Directory -Force -Path out\windows | Out-Null
+          $installer = Get-ChildItem windows\output\*.exe | Select-Object -First 1
+          if (!$installer) { throw 'installer.exe was not produced' }
+          Copy-Item $installer.FullName out\windows\installer.exe
+          Get-FileHash out\windows\installer.exe -Algorithm SHA256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: out/windows/installer.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Android installer.apk
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.7.0'
+      - name: Build APK
+        working-directory: android
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Stage APK
+        run: |
+          mkdir -p out/android
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/android/installer.apk
+          sha256sum out/android/installer.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-installer
+          path: out/android/installer.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  macos:
+    name: macOS ${{ matrix.arch }} DMG and PKG
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+            suffix: intel
+          - runner: macos-latest
+            arch: arm64
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build DMG and PKG
+        run: |
+          bash mac/build-macos.sh
+          mkdir -p "out/mac/${{ matrix.suffix }}"
+          cp mac/output/${{ matrix.arch }}/*.dmg "out/mac/${{ matrix.suffix }}/installer-${{ matrix.suffix }}.dmg"
+          cp mac/output/${{ matrix.arch }}/*.pkg "out/mac/${{ matrix.suffix }}/installer-${{ matrix.suffix }}.pkg"
+          shasum -a 256 out/mac/${{ matrix.suffix }}/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.suffix }}-installers
+          path: out/mac/${{ matrix.suffix }}/*
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    name: Assemble platform download ZIP
+    needs: [windows, android, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-installers'
+          path: collected
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: collected/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-installer
+          path: collected/android
+      - name: Assemble ZIP
+        run: |
+          mkdir -p release/linux release/windows release/android release/mac
+          cp linux/installer.deb release/linux/installer.deb
+          cp linux/portable/sl4m3d-signer-linux-portable.tar.gz release/linux/
+          cp collected/windows/installer.exe release/windows/installer.exe
+          cp collected/android/installer.apk release/android/installer.apk
+          find collected -type f \( -name '*.dmg' -o -name '*.pkg' \) -exec cp {} release/mac/ \;
+          test -s release/linux/installer.deb
+          test -s release/windows/installer.exe
+          test -s release/android/installer.apk
+          test "$(find release/mac -type f -name '*.dmg' | wc -l)" -ge 2
+          test "$(find release/mac -type f -name '*.pkg' | wc -l)" -ge 2
+          (cd release && find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt)
+          zip -r sl4m3d-signer-installers-v1.2.zip release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sl4m3d-signer-installers-v1.2
+          path: sl4m3d-signer-installers-v1.2.zip
+          if-no-files-found: error
+          retention-days: 90

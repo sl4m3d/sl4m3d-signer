@@ -1,0 +1,13 @@
+sl4m3d Signer v1.2 installer build status
+
+Local host: Debian GNU/Linux 13 x86_64
+
+Not available locally:
+- Windows: PowerShell, Inno Setup, Windows runner
+- Android: Gradle, Android SDK, adb
+- macOS: macOS host, Xcode command line tools, hdiutil, pkgbuild, codesign
+
+Replit: existing project 67c063fe-92ed-4ca9-9435-0df14aa01a79 currently reports phase=paused; no build result was returned.
+GitHub: connected account currently reports zero repositories, so no existing repository can be dispatched.
+
+No EXE/APK/DMG/PKG binaries were generated in this environment. The included GitHub Actions workflow is ready to run after the source folder is uploaded to a GitHub repository you control.
